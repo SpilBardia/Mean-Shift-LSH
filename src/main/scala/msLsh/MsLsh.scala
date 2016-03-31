@@ -22,18 +22,14 @@
 
 package msLsh
 
+import org.apache.spark
+import org.apache.spark.SparkContext
+import org.apache.spark.mllib.linalg.{Vector, Vectors}
+import org.apache.spark.rdd.RDD
+import spire.implicits._
+import scala.collection.mutable.ArrayBuffer
 import scala.util.Random
 import scala.util.Sorting.quickSort
-import scala.collection.mutable.ArrayBuffer
-import spire.implicits._
-import org.apache.spark.mllib.feature.StandardScaler
-import org.apache.spark.rdd.RDD
-import org.apache.spark.SparkContext
-import org.apache.spark.mllib.rdd.MLPairRDDFunctions._
-import org.apache.spark.mllib.util._
-import org.apache.spark.mllib.linalg.{Vector, Vectors}
-import org.apache.spark.storage.StorageLevel
-import org.apache.spark
 
 /**
  * Mean-Shift-LSH clustering 
@@ -41,38 +37,6 @@ import org.apache.spark
  * It can also be apply in order to analyse image, to use this features it is recommanded to convert image from RGB space to L*u*v* space
  */
 
-/**
- * The class which transform vector to scalar thank's to LSH
- */
-case class LshHash extends Serializable  {			
-  def hashfunc(x:Vector, w:Double, b:Double, tabHash1:Array[Array[Double]]) : Double = {
-    var tabHash : Array[Double] = Array()
-	  val x1 = x.toArray
-	  for( ind <- 0 to tabHash1.size-1) {
-	    var sum = 0.0
-	    for( ind2 <- 0 to x1.size-1) {
-	      sum = sum + (x1(ind2)*tabHash1(ind)(ind2))
-	  	  }			
-	    tabHash =  tabHash :+ (sum+b)/w
-	  }
-	  tabHash.reduce(_+_)
-  }
-}
-/**
- * The class which compute centroïds
- */
-case class Bary0 extends Serializable {
-
-	/**
-	 * Function which compute centroïds
-	 */
-  def bary(tab1:Array[(Vector,Double)],k:Int) : Vector = {
-    var tab2 = tab1.map(_._1.toArray)
-	  var bary1 = tab2.reduce(_+_)
-	  bary1 = bary1.map(_/k)
-	  Vectors.dense(bary1)
-  }
-}
 
 /**
  * The major class where MS-LSH algorithm and prediction fonction are implemented
@@ -187,9 +151,9 @@ class MsLsh private (
    */
   def tabHash(nb:Int, dim:Int) = {
     var tabHash0 : Array[Array[Double]] = Array()
-    for( ind <- 0 to nb-1) {
+    for( ind <- 0 until nb) {
       var vechash1 : Array[Double] = Array()
-      for( ind <- 0 to dim-1) {
+      for( ind <- 0 until dim) {
         val nG = Random.nextGaussian
         vechash1 = vechash1 :+ nG
       }
@@ -211,7 +175,7 @@ class MsLsh private (
   	val size1 = vecttest.size
   	var minArray : Array[Double] = Array()
   	var maxArray : Array[Double] = Array()
-  	for( ind0 <- 0 to size1-1) {
+  	for( ind0 <- 0 until size1) {
   	  var vectmin = rdd1.takeOrdered(1)(Ordering[(Double)].on(x => x._2(ind0)))
   	  var vectmax = rdd1.top(1)(Ordering[(Double)].on(x => x._2(ind0)))
   	  val min0 = vectmin(0)._2(ind0)
@@ -221,7 +185,7 @@ class MsLsh private (
   	}
   	val rdd2 = rdd1.map( x => {
   	  var tabcoord : Array[Double] = Array()
-  	  for( ind0 <- 0 to size1-1) {
+  	  for( ind0 <- 0 until size1) {
   	    val coordXi = (x._2(ind0)-minArray(ind0))/(maxArray(ind0)-minArray(ind0))
   	    tabcoord = tabcoord :+ coordXi
   	  }
@@ -240,7 +204,7 @@ class MsLsh private (
     val minArray = maxMinArray0(1)
     val rdd2 = rdd1.map( x => {
       var tabcoord : Array[Double] = Array()
-      for( ind0 <- 0 to size1-1) {
+      for( ind0 <- 0 until size1) {
         val coordXi = x._2(ind0)*(maxArray(ind0)-minArray(ind0))+minArray(ind0)
         tabcoord = tabcoord :+ coordXi
       }
@@ -262,7 +226,7 @@ class MsLsh private (
     val size =  data.count().toInt
     var maxMinArray : Array[Array[Double]] = Array()
     var dim = 0
-    val maxK = (size/nbblocs).toInt -1 
+    val maxK = (size/nbblocs) -1
   
     if (size < cmin) { throw new IllegalStateException("Exception : cmin > data size") }
     if (maxK <= k) { throw new IllegalStateException("Exception : You set a too high K value") }
@@ -296,8 +260,8 @@ class MsLsh private (
     var rdd_LSH = data0.map(x => (x._1,x._2,x._2,hasher.value.hashfunc(x._2,ww.value,b.value,tabHash0.value)))
                         .repartition(nbblocs)
     var rdd_res : RDD[(String,Vector,Vector)] = sc.emptyRDD
+    rdd_LSH.cache.foreach(x=>{})  // materialize rdd_LSH
     data.unpersist()
-    rdd_LSH.cache.foreach(x=>{})
    
     for( ind <- 1 to yStarIter  ) {
       val rdd_LSH_ord =  rdd_LSH.sortBy(_._4).mapPartitions( x => {
@@ -308,7 +272,7 @@ class MsLsh private (
     	    (y._1,y._2,centroider.value.bary(array2.take(k),k))
         }).iterator
       }
-      ,true)
+      ,preservesPartitioning = true)
       if(ind < yStarIter){
         val rdd_LSH_unpersist = rdd_LSH
         rdd_LSH = rdd_LSH_ord.map(x => (x._1,x._2,x._3,hasher.value.hashfunc(x._3,ww.value,b.value,tabHash0.value)))
@@ -319,10 +283,9 @@ class MsLsh private (
     }
 
   	var ind1 = 0
-  	var rdd_Ystar_ind = rdd_res.coalesce(numPart,true).cache
+  	var rdd_Ystar_ind = rdd_res.coalesce(numPart,shuffle = true).cache
   	var vector0 = rdd_Ystar_ind.first._2
   	var stop = 1
-  	var tab_ind : Array[Array[String]] = Array()
     var rdd0 : RDD[(String,(String,Vector,Vector))] = sc.emptyRDD
 
   	while ( stop != 0 ) {
@@ -346,7 +309,7 @@ class MsLsh private (
 
   	  if(stop != 0) { vector0 = rdd_Ystar_ind.first()._2 }
   	  ind1 += 1
-  	} 
+  	}
 
     rdd_Ystar_ind.unpersist()
   
@@ -358,35 +321,34 @@ class MsLsh private (
   	val numElemByCLust = rdd_Ystar_labeled.countByKey.toArray
   	quickSort(numElemByCLust)(Ordering[(Int)].on(_._1.toInt))
 
-  	var centroidArray = rdd_Ystar_labeled.map(x=>(x._1,x._2._2.toArray)).reduceByKey(_+_).collect
+  	val centroidArray = rdd_Ystar_labeled.map(x=>(x._1,x._2._2.toArray)).reduceByKey(_+_).collect
     quickSort(centroidArray)(Ordering[(Int)].on(_._1.toInt))
 
   	var centroidArray1 : Array[(String,Vector,Int)] = Array()
     rdd0.unpersist()
 
     // Form the array of clusters centroids
-  	for( ind <- 0 to numElemByCLust.size-1) {
+  	for( ind <- numElemByCLust.indices) {
   	  centroidArray1 = centroidArray1 :+ (numElemByCLust(ind)._1,Vectors.dense(centroidArray(ind)._2.map(_/numElemByCLust(ind)._2)),ind)
   	}
-  
-  	/**
-  	* Fusion of cluster which cardinality is smaller than cmin 
-  	*/
-  	var tab_inf_cmin = numElemByCLust.filter( _._2 <= cmin)
-  	var stop_size = tab_inf_cmin.size
-  	var tab_ind_petit = tab_inf_cmin.map(_._1).toBuffer
+
+    /**
+      * Fusion of cluster which cardinality is smaller than cmin
+      */
+    val tab_inf_cmin = numElemByCLust.filter(_._2 <= cmin)
+    var tab_ind_petit = tab_inf_cmin.map(_._1).toBuffer
   	val map_ind_all = numElemByCLust.toMap
   
   	val tabbar00 = centroidArray1.map(x=>(x._3,x._1,x._2,map_ind_all(x._1),x._1))
   	quickSort(tabbar00)(Ordering[(Int)].on(_._1))
-  	var tabbar01 = tabbar00.toBuffer
+    val tabbar01 = tabbar00.toBuffer
   
-  	while(tab_ind_petit.size != 0) {
-  	  for (cpt2 <- 0 to tabbar01.size-1) {
+  	while(tab_ind_petit.nonEmpty) {
+  	  for (cpt2 <- tabbar01.indices) {
   		if(tabbar01(cpt2)._4 < cmin){
   		  val labelcurrent = tabbar01(cpt2)._2
   		  val sizecurrent = tabbar01(cpt2)._4
-  		  var tabproche0 = tabbar01.map(y=>(Vectors.sqdist(y._3,tabbar01(cpt2)._3),y._1,y._2,y._4)).toArray
+        val tabproche0 = tabbar01.map(y => (Vectors.sqdist(y._3, tabbar01(cpt2)._3), y._1, y._2, y._4)).toArray
   		  quickSort(tabproche0)(Ordering[(Double)].on(_._1))
   		  var cpt3 = 1
   		  while (tabproche0(cpt3)._3 == labelcurrent) {cpt3 += 1}
@@ -397,11 +359,11 @@ class MsLsh private (
   		  val tab01 = tabbar01.filter(x=> x._2==labelcurrent)
   		  var tabind0 : ArrayBuffer[String] = ArrayBuffer()
   		  // Update
-  		  for( ind8 <- 0 to tab00.size-1) {
+  		  for( ind8 <- tab00.indices) {
   			tabind0 = tabind0 :+ tab00(ind8)._2					
   			tabbar01.update(tab00(ind8)._1,(tab00(ind8)._1,labelplusproche,tab00(ind8)._3,sizeplusproche+sizecurrent,tab00(ind8)._5))
   		  }
-  		  for( ind8 <- 0 to tab01.size-1) {
+  		  for( ind8 <- tab01.indices) {
   			tabind0 = tabind0 :+ tab01(ind8)._2					
   			tabbar01.update(tab01(ind8)._1,(tab01(ind8)._1,labelplusproche,tab01(ind8)._3,sizeplusproche+sizecurrent,tab01(ind8)._5))
   		  }
@@ -421,7 +383,7 @@ class MsLsh private (
   
     val k0 = rddf.countByKey
     var numClust_Ystarer = k0.size 
-    val centroidF = rddf.map(x=>(x._1,(x._2._2.toArray))).reduceByKey(_+_)
+    val centroidF = rddf.map(x=>(x._1, x._2._2.toArray)).reduceByKey(_+_)
                         .map(x=>(x._1,Vectors.dense(x._2.map(_/k0(x._1)))))
     
     val centroidMap = descaleRDDcentroid(centroidF,maxMinArray).collect.toMap
@@ -438,10 +400,10 @@ object MsLsh {
   /**
    * Trains a MS-LSH model using the given set of parameters.
    *
-   * @param sc : SparkContext`
+   * @param sc : SparkContext
    * @param data : an RDD[(String,Vector)] where String is the ID and Vector the rest of data
    * @param k : number of neighbours to look at during gradient ascent
-   * @parem threshold_cluster : threshold under which we give the same label to two points
+   * @param threshold_cluster : threshold under which we give the same label to two points
    * @param yStarIter : Number of iteration for modes search
    * @param cmin : threshold under which we fusion little cluster with the nearest cluster
    * @param normalisation : Normalise the dataset (it is recommand to have same magnitude order beetween features)
