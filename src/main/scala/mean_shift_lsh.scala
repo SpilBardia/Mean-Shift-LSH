@@ -318,12 +318,19 @@ class MsLsh private (
       else rdd_res = rdd_LSH_ord.map(x => (x._1,x._3,x._2))
     }
 
-  	var ind1 = 0
-  	var rdd_Ystar_ind = rdd_res.coalesce(numPart,true).cache
-  	var vector0 = rdd_Ystar_ind.first._2
-  	var stop = 1
-  	var tab_ind : Array[Array[String]] = Array()
+
+    var ind1 = 0
+    var rdd_Ystar_ind = rdd_res.coalesce(numPart,true).cache
+    var vector0 = rdd_Ystar_ind.first._2
+    var stop = 1
+    var tab_ind : Array[Array[String]] = Array()
     var rdd0 : RDD[(String,(String,Vector,Vector))] = sc.emptyRDD
+
+    ww.destroy()
+    b.destroy()
+    tabHash0.destroy()
+    hasher.destroy()
+    centroider.destroy()
 
   	while ( stop != 0 ) {
       // We mesure distance from Y* to others et we keep closest
@@ -334,12 +341,20 @@ class MsLsh private (
       val rdd_to_unpersist = rdd0
       rdd0 = rdd0.union(rdd_Clust_i2_ind).coalesce(numPart).cache
       // Necessary action to keep rdd0 in memory beacause if RDD doens't persist data becomes corrupt and we get one cluster
+      if(ind1 % 20 == 19){
+      rdd0.checkpoint()
+      }
+      
       rdd0.foreach(x=>{})
       rdd_to_unpersist.unpersist()
 
       // We keep Y* whose distance is greather than threshold
       val rdd_to_unpersist2 = rdd_Ystar_ind
       rdd_Ystar_ind = rdd_Ystar_ind.subtract(rdd_Clust_i_ind).cache
+      if(ind1 % 20 == 19){
+      rdd_Ystar_ind.checkpoint()
+      }
+      
       stop = rdd_Ystar_ind.count().toInt
       rdd_to_unpersist2.unpersist()
       rdd_Clust_i_ind.unpersist()      
